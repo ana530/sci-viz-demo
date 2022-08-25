@@ -7,19 +7,55 @@ services:
   pharus:
     cpus: 0.50
     mem_limit: 512m
-    image: datajoint/pharus:0.4.1
+    # image: datajoint/pharus:0.4.1
+    image: jverswijver/pharus:0.4.2-prerelease
     environment:
       PHARUS_SPEC_PATH: /main/specs/config.yaml # for dynamic api spec
-      PHARUS_MODE: ${MODE}  # DEV | PROD
+      PHARUS_MODE: ${MODE} # DEV | PROD
+      PHARUS_USER: clpitani
+      PHARUS_HOST: rds.datajoint.io
+      PHARUS_PASSWORD: Chetu1221!DataJoint
     env_file: .env
     volumes:
       - ./config.yaml:/main/specs/config.yaml:ro #copy the spec over to /main/specs/YOUR_SPEC_NAME
+    # command:
+    #   - sh
+    #   - -c
+    #   - |
+    #     export PHARUS_PRIVATE_KEY=$$(echo $$PHARUS_PRIVATE_KEY | sed 's|\\n|\n|g')
+    #     otumat watch -f $${PHARUS_SPEC_PATH} -s /tmp/reload.sh -i 5
     command:
       - sh
       - -c
       - |
-        export PHARUS_PRIVATE_KEY=$$(echo $$PHARUS_PRIVATE_KEY | sed 's|\\n|\n|g')
-        otumat watch -f $${PHARUS_SPEC_PATH} -s /tmp/reload.sh -i 5
+        pharus_update() {
+            sleep 3  # delaying to ensure pharus is up
+            [ -z "$$PRIMARY_PID" ] || kill $$PRIMARY_PID
+            if [ "$$PHARUS_MODE" == "DEV" ]; then
+                export DEBUG=1
+                export FLASK_ENV=development
+                pharus &
+            else
+                gunicorn --bind "0.0.0.0:$${PHARUS_PORT}" pharus.server:app &
+            fi
+            PRIMARY_PID=$$!
+        }
+        pharus_update
+        echo "[$$(date -u '+%Y-%m-%d %H:%M:%S')][DataJoint]: Monitoring Pharus updates..."
+        INIT_TIME=$$(date +%s)
+        LAST_MOD_TIME=$$(date -r $$PHARUS_SPEC_PATH +%s)
+        DELTA=$$(expr $$LAST_MOD_TIME - $$INIT_TIME)
+        while true; do
+           CURR_LAST_MOD_TIME=$$(date -r $$PHARUS_SPEC_PATH +%s)
+           CURR_DELTA=$$(expr $$CURR_LAST_MOD_TIME - $$INIT_TIME)
+           if [ "$$DELTA" -lt "$$CURR_DELTA" ]; then
+               echo "[$$(date -u '+%Y-%m-%d %H:%M:%S')][DataJoint]: Reloading Pharus since \`$$DJSCIVIZ_SPEC_PATH\` changed."
+               pharus_update
+               DELTA=$$CURR_DELTA
+           else
+               sleep 2
+           fi
+        done
     # ports:
     # - "5000:5000"
     networks:
@@ -27,12 +63,13 @@ services:
   sci-viz:
     cpus: 2.0
     mem_limit: 4g
-    image: datajoint/sci-viz:0.1.0
+    # image: datajoint/sci-viz:0.1.0
+    image: jverswijver/sci-viz:0.2.0-prerelease
     environment:
       - CHOKIDAR_USEPOLLING=true
       - REACT_APP_DJSCIVIZ_BACKEND_PREFIX=/api
       - DJSCIVIZ_SPEC_PATH=config.yaml
-      - DJSCIVIZ_MODE=${MODE}  # DEV | PROD
+      - DJSCIVIZ_MODE=${MODE} # DEV | PROD
     volumes:
       - ./config.yaml:/main/config.yaml:ro
     # ports:
@@ -75,7 +112,7 @@ services:
     networks:
       - main
   fakeservices.datajoint.io:
-    image: datajoint/nginx:v0.1.1
+    image: datajoint/nginx:v0.2.2
     environment:
       - ADD_pharus_TYPE=REST
       - ADD_pharus_ENDPOINT=pharus:5000
